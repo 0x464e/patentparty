@@ -1,0 +1,137 @@
+name: Build and push
+
+on:
+  schedule:
+    - cron: "37 * * * *" # run every hour to poll for new releases
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force rebuild even if latest release was already built"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      version: ${{ steps.check.outputs.version }}
+      current_version: ${{ steps.check.outputs.current_version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check latest upstream release
+        id: check
+        env:
+          FORCE: ${{ github.event.inputs.force || 'false' }}
+        run: |
+          set -euo pipefail
+
+          raw_tag="$(curl -fsSL "https://api.github.com/repos/9001/copyparty/releases/latest" | jq -r '.tag_name')"
+          test -n "$raw_tag"
+          test "$raw_tag" != "null"
+
+          version="${raw_tag#v}"
+          current="$(cat .github/last_upstream_release.txt 2>/dev/null || true)"
+
+          should_build=false
+
+          if [ "$FORCE" = "true" ]; then
+            should_build=true
+          elif [ "$version" != "$current" ]; then
+            if printf '%s\n%s\n' "$current" "$version" | sort -C -V; then
+              should_build=true
+            fi
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "current_version=$current" >> "$GITHUB_OUTPUT"
+          echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
+
+      - name: Show decision
+        run: |
+          echo "should_build    = ${{ steps.check.outputs.should_build }}"
+          echo "current_version = ${{ steps.check.outputs.current_version }}"
+          echo "latest_version  = ${{ steps.check.outputs.version }}"
+
+  build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        variant: [ac, iv, dj]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: "0x464e"
+          password: ${{ secrets.DOCKER_PAT }}
+
+      - name: Compute tags
+        id: tags
+        run: |
+          set -euo pipefail
+
+          variant="${{ matrix.variant }}"
+          version="${{ needs.check.outputs.version }}"
+          image="0x464e/patentparty"
+
+          tags="${image}:${variant}-${version}"$'\n'
+          tags+="${image}:${variant}-latest"
+
+          # also push plain "latest" tag for the "ac" variant, since it's the default/recommended variant
+          if [ "$variant" = "ac" ]; then
+            tags+=$'\n'"${image}:latest"
+          fi
+
+          {
+            echo 'tags<<EOF'
+            echo "$tags"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          push: true
+          build-args: |
+            VARIANT=${{ matrix.variant }}
+            IMAGE_TAG=${{ needs.check.outputs.version }}
+          tags: ${{ steps.tags.outputs.tags }}
+
+  record:
+    needs: [check, build]
+    if: needs.check.outputs.should_build == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Record built upstream release
+        run: |
+          printf '%s\n' '${{ needs.check.outputs.version }}' > .github/last_upstream_release.txt
+
+      - name: Commit updated state
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/last_upstream_release.txt
+          git commit -m "chore: built Copyparty ${{ needs.check.outputs.version }}" || exit 0
+          git push
