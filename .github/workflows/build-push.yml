@@ -10,6 +10,11 @@ on:
         required: false
         default: false
         type: boolean
+      version:
+        description: "Which version to force build and push (e.g.: 1.20.9)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -30,23 +35,29 @@ jobs:
         id: check
         env:
           FORCE: ${{ github.event.inputs.force || 'false' }}
+          VERSION_OVERRIDE: ${{ github.event.inputs.version || '' }}
         run: |
           set -euo pipefail
 
-          raw_tag="$(curl -fsSL "https://api.github.com/repos/9001/copyparty/releases/latest" | jq -r '.tag_name')"
-          test -n "$raw_tag"
-          test "$raw_tag" != "null"
-
-          version="${raw_tag#v}"
           current="$(cat .github/last_upstream_release.txt 2>/dev/null || true)"
-
           should_build=false
 
-          if [ "$FORCE" = "true" ]; then
+          if [ -n "$VERSION_OVERRIDE" ]; then
+            version="$VERSION_OVERRIDE"
             should_build=true
-          elif [ "$version" != "$current" ]; then
-            if printf '%s\n%s\n' "$current" "$version" | sort -C -V; then
+          else
+            raw_tag="$(curl -fsSL "https://api.github.com/repos/9001/copyparty/releases/latest" | jq -r '.tag_name')"
+            test -n "$raw_tag"
+            test "$raw_tag" != "null"
+
+            version="${raw_tag#v}"
+
+            if [ "$FORCE" = "true" ]; then
               should_build=true
+            elif [ "$version" != "$current" ]; then
+              if printf '%s\n%s\n' "$current" "$version" | sort -C -V; then
+                should_build=true
+              fi
             fi
           fi
 
@@ -67,11 +78,20 @@ jobs:
 
     strategy:
       matrix:
-        variant: [ac, iv, dj]
+        include:
+          - variant: ac
+            platforms: linux/amd64,linux/arm/v7,linux/s390x,linux/386,linux/arm64,linux/ppc64le
+          - variant: iv
+            platforms: linux/amd64,linux/arm/v7,linux/386,linux/arm64
+          - variant: dj
+            platforms: linux/amd64,linux/386,linux/arm64
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -109,14 +129,17 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           push: true
+          platforms: ${{ matrix.platforms }}
           build-args: |
             VARIANT=${{ matrix.variant }}
             IMAGE_TAG=${{ needs.check.outputs.version }}
           tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   record:
     needs: [check, build]
-    if: needs.check.outputs.should_build == 'true' && needs.build.result == 'success'
+    if: needs.check.outputs.should_build == 'true' && needs.build.result == 'success' && (github.event_name != 'workflow_dispatch' || github.event.inputs.version == '')
     runs-on: ubuntu-latest
 
     steps:

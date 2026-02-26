@@ -1,7 +1,7 @@
 # patentparty
 ### copyparty with patent-restricted features added back in
 
-patentparty is a drop-in replacement for the official Docker image of copyparty.  
+patentparty is a drop-in replacement for the official Docker image of [copyparty](https://github.com/9001/copyparty).  
 It adds back in H265/HEVC, HEIF and non-LC AAC support.  
 These features were [removed](https://github.com/9001/copyparty/commit/1bec91d11ca2f35313053c2a8d9bc6415ed38128) from copyparty 
 due to [wanting to avoid patent issues](https://github.com/9001/copyparty/blob/hovudstraum/docs/bad-codecs.md).
@@ -12,6 +12,7 @@ All credits for the copyparty application go to the original author, [ed, "9001"
 # Docker Images
 This repo only builds docker images (since it's the only real affected platform)  
 The docker images are found on [Docker hub](https://hub.docker.com/r/0x464e/patentparty).  
+patentparty supports the same CPU architectures as the corresponding official copyparty images.
 
 The build pipeline polls for new upstream copyparty releases every hour.  
 So, in the worst case it may take up to about 2 hours for a patentparty image to
