@@ -42,7 +42,7 @@ Refer to the official copyparty documentation for usage.
 
 # Building
 If you want to build the images yourself instead of using the images my pipeline pushes to Docker hub,
-you can easily do so by cloning this repo (or by just downloading the Dockerfile(https://github.com/0x464e/patentparty/blob/master/Dockerfile))
+you can easily do so by cloning this repo or by just downloading the [Dockerfile](https://github.com/0x464e/patentparty/blob/master/Dockerfile)
 and then building the variant (ac, iv or dj) of your choice by running:
 
 ```sh
