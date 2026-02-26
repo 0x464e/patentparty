@@ -5,11 +5,6 @@ on:
     - cron: "37 * * * *" # run every hour to poll for new releases
   workflow_dispatch:
     inputs:
-      force:
-        description: "Force rebuild even if latest release was already built"
-        required: false
-        default: false
-        type: boolean
       version:
         description: "Which version to force build and push (e.g.: 1.20.9)"
         required: false
@@ -26,6 +21,7 @@ jobs:
       should_build: ${{ steps.check.outputs.should_build }}
       version: ${{ steps.check.outputs.version }}
       current_version: ${{ steps.check.outputs.current_version }}
+      latest_version: ${{ steps.check.outputs.latest_version }}
 
     steps:
       - name: Checkout
@@ -34,11 +30,15 @@ jobs:
       - name: Check latest upstream release
         id: check
         env:
-          FORCE: ${{ github.event.inputs.force || 'false' }}
           VERSION_OVERRIDE: ${{ github.event.inputs.version || '' }}
         run: |
           set -euo pipefail
 
+          raw_tag="$(curl -fsSL "https://api.github.com/repos/9001/copyparty/releases/latest" | jq -r '.tag_name')"
+          test -n "$raw_tag"
+          test "$raw_tag" != "null"
+
+          latest_version="${raw_tag#v}"
           current="$(cat .github/last_upstream_release.txt 2>/dev/null || true)"
           should_build=false
 
@@ -46,15 +46,9 @@ jobs:
             version="$VERSION_OVERRIDE"
             should_build=true
           else
-            raw_tag="$(curl -fsSL "https://api.github.com/repos/9001/copyparty/releases/latest" | jq -r '.tag_name')"
-            test -n "$raw_tag"
-            test "$raw_tag" != "null"
+            version="$latest_version"
 
-            version="${raw_tag#v}"
-
-            if [ "$FORCE" = "true" ]; then
-              should_build=true
-            elif [ "$version" != "$current" ]; then
+            if [ "$version" != "$current" ]; then
               if printf '%s\n%s\n' "$current" "$version" | sort -C -V; then
                 should_build=true
               fi
@@ -62,6 +56,7 @@ jobs:
           fi
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$latest_version" >> "$GITHUB_OUTPUT"
           echo "current_version=$current" >> "$GITHUB_OUTPUT"
           echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
 
@@ -69,7 +64,8 @@ jobs:
         run: |
           echo "should_build    = ${{ steps.check.outputs.should_build }}"
           echo "current_version = ${{ steps.check.outputs.current_version }}"
-          echo "latest_version  = ${{ steps.check.outputs.version }}"
+          echo "build_version   = ${{ steps.check.outputs.version }}"
+          echo "latest_version  = ${{ steps.check.outputs.latest_version }}"
 
   build:
     needs: check
@@ -80,11 +76,11 @@ jobs:
       matrix:
         include:
           - variant: ac
-            platforms: linux/amd64,linux/arm/v7,linux/s390x,linux/386,linux/arm64,linux/ppc64le
+            platforms: linux/amd64,linux/arm/v7,linux/s390x,linux/386,linux/arm64/v8,linux/ppc64le
           - variant: iv
-            platforms: linux/amd64,linux/arm/v7,linux/386,linux/arm64
+            platforms: linux/amd64,linux/arm/v7,linux/386,linux/arm64/v8
           - variant: dj
-            platforms: linux/amd64,linux/386,linux/arm64
+            platforms: linux/amd64,linux/386,linux/arm64/v8
 
     steps:
       - name: Checkout
@@ -109,14 +105,19 @@ jobs:
 
           variant="${{ matrix.variant }}"
           version="${{ needs.check.outputs.version }}"
+          latest_version="${{ needs.check.outputs.latest_version }}"
           image="0x464e/patentparty"
 
-          tags="${image}:${variant}-${version}"$'\n'
-          tags+="${image}:${variant}-latest"
+          tags="${image}:${variant}-${version}"
 
-          # also push plain "latest" tag for the "ac" variant, since it's the default/recommended variant
-          if [ "$variant" = "ac" ]; then
-            tags+=$'\n'"${image}:latest"
+          # only push "latest" tags when building the current upstream latest version
+          if [ "$version" = "$latest_version" ]; then
+            tags+=$'\n'"${image}:${variant}-latest"
+
+            # also push plain "latest" tag for the "ac" variant, since it's the default/recommended variant
+            if [ "$variant" = "ac" ]; then
+              tags+=$'\n'"${image}:latest"
+            fi
           fi
 
           {
