@@ -31,21 +31,35 @@ jobs:
         id: check
         env:
           VERSION_OVERRIDE: ${{ github.event.inputs.version || '' }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          raw_tag="$(curl -fsSL "https://api.github.com/repos/9001/copyparty/releases/latest" | jq -r '.tag_name')"
-          test -n "$raw_tag"
-          test "$raw_tag" != "null"
-
-          latest_version="${raw_tag#v}"
           current="$(cat .github/last_upstream_release.txt 2>/dev/null || true)"
           should_build=false
+
+          api_ok=false
+          latest_version=""
+
+          if raw_tag="$(curl --silent --show-error --fail \
+              --retry 5 \
+              --retry-all-errors \
+              --retry-delay 2 \
+              --connect-timeout 10 \
+              --max-time 30 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/9001/copyparty/releases/latest" \
+              | jq -r '.tag_name')"; then
+            if [ -n "$raw_tag" ] && [ "$raw_tag" != "null" ]; then
+              latest_version="${raw_tag#v}"
+              api_ok=true
+            fi
+          fi
 
           if [ -n "$VERSION_OVERRIDE" ]; then
             version="$VERSION_OVERRIDE"
             should_build=true
-          else
+          elif [ "$api_ok" = "true" ]; then
             version="$latest_version"
 
             if [ "$version" != "$current" ]; then
@@ -53,6 +67,11 @@ jobs:
                 should_build=true
               fi
             fi
+          else
+            # API failed and no manual version override: skip quietly
+            version="$current"
+            should_build=false
+            echo "GitHub API request failed after retries; skipping this run."
           fi
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
